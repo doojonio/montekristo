@@ -1,4 +1,4 @@
-use backend::models::{Account, Transaction};
+use backend::models::{Account, Category, Transaction};
 use backend::repository::Ledger;
 use tauri::Manager;
 
@@ -14,6 +14,22 @@ async fn insert_account(
 ) -> Result<(), String> {
   ledger
     .insert_account(&account)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_categories(ledger: tauri::State<'_, Ledger>) -> Result<Vec<Category>, String> {
+  ledger.categories().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn insert_category(
+  ledger: tauri::State<'_, Ledger>,
+  category: Category,
+) -> Result<(), String> {
+  ledger
+    .insert_category(&category)
     .await
     .map_err(|e| e.to_string())
 }
@@ -57,6 +73,8 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       get_accounts,
       insert_account,
+      get_categories,
+      insert_category,
       get_transactions,
       insert_transaction
     ])

@@ -9,7 +9,7 @@ use serde::Serialize;
 use tower_http::cors::CorsLayer;
 
 use backend::error::LedgerError;
-use backend::models::{Account, Transaction};
+use backend::models::{Account, Category, Transaction};
 use backend::repository::Ledger;
 
 #[tokio::main]
@@ -20,6 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/api/accounts", get(get_accounts).post(insert_account))
+        .route(
+            "/api/categories",
+            get(get_categories).post(insert_category),
+        )
         .route(
             "/api/transactions",
             get(get_transactions).post(insert_transaction),
@@ -45,6 +49,18 @@ async fn insert_account(
 ) -> Result<(StatusCode, Json<Account>), ApiError> {
     ledger.insert_account(&account).await?;
     Ok((StatusCode::CREATED, Json(account)))
+}
+
+async fn get_categories(State(ledger): State<Ledger>) -> Result<Json<Vec<Category>>, ApiError> {
+    Ok(Json(ledger.categories().await?))
+}
+
+async fn insert_category(
+    State(ledger): State<Ledger>,
+    Json(category): Json<Category>,
+) -> Result<(StatusCode, Json<Category>), ApiError> {
+    ledger.insert_category(&category).await?;
+    Ok((StatusCode::CREATED, Json(category)))
 }
 
 async fn get_transactions(State(ledger): State<Ledger>) -> Result<Json<Vec<Transaction>>, ApiError> {

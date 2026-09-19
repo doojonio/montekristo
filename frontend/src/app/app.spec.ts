@@ -4,6 +4,7 @@ import { provideNativeDateAdapter } from '@angular/material/core';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 
 import { App } from './app';
+import { CategoryService } from './services/category.service';
 import { LedgerService } from './services/ledger.service';
 
 describe('App', () => {
@@ -18,6 +19,15 @@ describe('App', () => {
           useValue: {
             accounts: signal([]),
             transactions: signal([]),
+            loading: signal(false),
+            error: signal(null),
+            refresh: () => Promise.resolve(),
+          },
+        },
+        {
+          provide: CategoryService,
+          useValue: {
+            categories: signal([]),
             loading: signal(false),
             error: signal(null),
             refresh: () => Promise.resolve(),

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::error::LedgerError;
-use crate::models::{Account, Posting, Transaction};
+use crate::models::{Account, Category, Posting, Transaction, default_categories};
 
 /// SQLite-backed repository for the ledger.
 #[derive(Debug, Clone)]
@@ -17,10 +17,13 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// Connects to the database at `url` (creating it if necessary) and runs
-    /// pending migrations. See [`db::connect`].
+    /// Connects to the database at `url` (creating it if necessary), runs
+    /// pending migrations, and seeds the default categories. See
+    /// [`db::connect`].
     pub async fn connect(url: &str) -> Result<Self, LedgerError> {
-        Ok(Self::new(db::connect(url).await?))
+        let ledger = Self::new(db::connect(url).await?);
+        ledger.seed_default_categories().await?;
+        Ok(ledger)
     }
 
     pub fn new(pool: SqlitePool) -> Self {
@@ -39,18 +42,68 @@ impl Ledger {
         Ok(())
     }
 
+    /// Persists a new category.
+    pub async fn insert_category(&self, category: &Category) -> Result<(), LedgerError> {
+        sqlx::query("INSERT INTO categories (id, name, category_type, icon) VALUES (?, ?, ?, ?)")
+            .bind(category.id.to_string())
+            .bind(&category.name)
+            .bind(category.category_type)
+            .bind(&category.icon)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Inserts the [`default_categories`] when the categories table is empty.
+    /// Existing categories (including user-created ones) are left untouched.
+    pub async fn seed_default_categories(&self) -> Result<(), LedgerError> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM categories")
+            .fetch_one(&self.pool)
+            .await?;
+        if count > 0 {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for category in default_categories() {
+            sqlx::query("INSERT INTO categories (id, name, category_type, icon) VALUES (?, ?, ?, ?)")
+                .bind(category.id.to_string())
+                .bind(&category.name)
+                .bind(category.category_type)
+                .bind(&category.icon)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Returns all categories, ordered by name.
+    pub async fn categories(&self) -> Result<Vec<Category>, LedgerError> {
+        sqlx::query_as::<_, CategoryRow>(
+            "SELECT id, name, category_type, icon FROM categories ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(Category::try_from)
+        .collect()
+    }
+
     /// Validates a transaction and persists it together with its postings
     /// atomically, inside a single database transaction.
     pub async fn insert_transaction(&self, transaction: &Transaction) -> Result<(), LedgerError> {
         transaction.validate()?;
 
         let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO transactions (id, date, description) VALUES (?, ?, ?)")
-            .bind(transaction.id.to_string())
-            .bind(transaction.date)
-            .bind(&transaction.description)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, category_id) VALUES (?, ?, ?, ?)",
+        )
+        .bind(transaction.id.to_string())
+        .bind(transaction.date)
+        .bind(&transaction.description)
+        .bind(transaction.category_id.map(|id| id.to_string()))
+        .execute(&mut *tx)
+        .await?;
 
         for posting in &transaction.postings {
             sqlx::query(
@@ -83,7 +136,7 @@ impl Ledger {
     /// Postings retain their original insertion order.
     pub async fn transactions(&self) -> Result<Vec<Transaction>, LedgerError> {
         let tx_rows = sqlx::query_as::<_, TransactionRow>(
-            "SELECT id, date, description FROM transactions ORDER BY date, id",
+            "SELECT id, date, description, category_id FROM transactions ORDER BY date, id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -117,6 +170,10 @@ impl Ledger {
                     id,
                     date: row.date,
                     description: row.description,
+                    category_id: row
+                        .category_id
+                        .map(|cid| parse_uuid(&cid, "transaction category_id"))
+                        .transpose()?,
                     postings: postings_by_tx.remove(&id).unwrap_or_default(),
                 })
             })
@@ -152,10 +209,32 @@ impl TryFrom<AccountRow> for Account {
 }
 
 #[derive(FromRow)]
+struct CategoryRow {
+    id: String,
+    name: String,
+    category_type: crate::models::CategoryType,
+    icon: Option<String>,
+}
+
+impl TryFrom<CategoryRow> for Category {
+    type Error = LedgerError;
+
+    fn try_from(row: CategoryRow) -> Result<Self, Self::Error> {
+        Ok(Category {
+            id: parse_uuid(&row.id, "category id")?,
+            name: row.name,
+            category_type: row.category_type,
+            icon: row.icon,
+        })
+    }
+}
+
+#[derive(FromRow)]
 struct TransactionRow {
     id: String,
     date: NaiveDate,
     description: String,
+    category_id: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -200,6 +279,7 @@ mod tests {
             id: Uuid::new_v4(),
             date,
             description: description.to_string(),
+            category_id: None,
             postings,
         }
     }
@@ -241,6 +321,112 @@ mod tests {
         ledger.insert_transaction(&tx).await.unwrap();
 
         assert_eq!(ledger.transactions().await.unwrap(), vec![tx]);
+    }
+
+    #[tokio::test]
+    async fn categories_roundtrip() {
+        let ledger = test_ledger().await;
+        let category = Category {
+            id: Uuid::new_v4(),
+            name: "Groceries".to_string(),
+            category_type: crate::models::CategoryType::Expense,
+            icon: Some("🛒".to_string()),
+        };
+        let salary = Category {
+            id: Uuid::new_v4(),
+            name: "Salary".to_string(),
+            category_type: crate::models::CategoryType::Income,
+            icon: None,
+        };
+
+        ledger.insert_category(&category).await.unwrap();
+        ledger.insert_category(&salary).await.unwrap();
+
+        assert_eq!(ledger.categories().await.unwrap(), vec![category, salary]);
+    }
+
+    #[tokio::test]
+    async fn seed_default_categories_is_idempotent() {
+        let ledger = test_ledger().await;
+
+        ledger.seed_default_categories().await.unwrap();
+        let seeded = ledger.categories().await.unwrap();
+        assert_eq!(seeded.len(), default_categories().len());
+        assert!(
+            seeded
+                .iter()
+                .all(|c| c.category_type == crate::models::CategoryType::Expense)
+        );
+
+        // A second seed must not duplicate or replace existing categories.
+        ledger.seed_default_categories().await.unwrap();
+        assert_eq!(ledger.categories().await.unwrap(), seeded);
+    }
+
+    #[tokio::test]
+    async fn transaction_roundtrip_preserves_category() {
+        let ledger = test_ledger().await;
+        let checking = account("Checking", AccountType::Asset);
+        let groceries_account = account("Groceries", AccountType::Expense);
+        ledger.insert_account(&checking).await.unwrap();
+        ledger.insert_account(&groceries_account).await.unwrap();
+        let category = Category {
+            id: Uuid::new_v4(),
+            name: "Groceries".to_string(),
+            category_type: crate::models::CategoryType::Expense,
+            icon: None,
+        };
+        ledger.insert_category(&category).await.unwrap();
+
+        let mut tx = transaction(
+            NaiveDate::from_ymd_opt(2026, 9, 19).unwrap(),
+            "groceries",
+            vec![
+                Posting {
+                    account_id: groceries_account.id,
+                    amount: dec!(10.10),
+                },
+                Posting {
+                    account_id: checking.id,
+                    amount: dec!(-10.10),
+                },
+            ],
+        );
+        tx.category_id = Some(category.id);
+        ledger.insert_transaction(&tx).await.unwrap();
+
+        assert_eq!(ledger.transactions().await.unwrap(), vec![tx]);
+    }
+
+    #[tokio::test]
+    async fn transaction_with_missing_category_is_rejected() {
+        let ledger = test_ledger().await;
+        let checking = account("Checking", AccountType::Asset);
+        let groceries = account("Groceries", AccountType::Expense);
+        ledger.insert_account(&checking).await.unwrap();
+        ledger.insert_account(&groceries).await.unwrap();
+
+        let mut tx = transaction(
+            NaiveDate::from_ymd_opt(2026, 9, 19).unwrap(),
+            "phantom category",
+            vec![
+                Posting {
+                    account_id: groceries.id,
+                    amount: dec!(5.00),
+                },
+                Posting {
+                    account_id: checking.id,
+                    amount: dec!(-5.00),
+                },
+            ],
+        );
+        tx.category_id = Some(Uuid::new_v4());
+
+        assert!(matches!(
+            ledger.insert_transaction(&tx).await,
+            Err(LedgerError::Database(_))
+        ));
+        assert!(ledger.transactions().await.unwrap().is_empty());
     }
 
     #[tokio::test]

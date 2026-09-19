@@ -50,6 +50,7 @@ mod tests {
             id: Uuid::new_v4(),
             date: NaiveDate::from_ymd_opt(2026, 9, 19).unwrap(),
             description: "test".to_string(),
+            category_id: None,
             postings,
         }
     }

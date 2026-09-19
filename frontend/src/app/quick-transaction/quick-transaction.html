@@ -30,6 +30,21 @@
         }
       </mat-form-field>
 
+      <mat-form-field class="w-full">
+        <mat-label>Category</mat-label>
+        <mat-select formControlName="categoryId">
+          <mat-option [value]="null">No category</mat-option>
+          @for (category of categories.categories(); track category.id) {
+            <mat-option [value]="category.id">
+              @if (category.icon) {
+                {{ category.icon }}
+              }
+              {{ category.name }}
+            </mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
       <div class="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
         <mat-form-field class="w-full">
           <mat-label>Debit account</mat-label>
@@ -40,7 +55,10 @@
               </mat-option>
             }
           </mat-select>
-          @if (form.controls.debitAccountId.hasError('required') && form.controls.debitAccountId.touched) {
+          @if (
+            form.controls.debitAccountId.hasError('required') &&
+            form.controls.debitAccountId.touched
+          ) {
             <mat-error>Debit account is required</mat-error>
           }
         </mat-form-field>
@@ -56,7 +74,10 @@
           </mat-select>
           @if (form.hasError('sameAccount') && form.controls.creditAccountId.touched) {
             <mat-error>Debit and credit accounts must differ</mat-error>
-          } @else if (form.controls.creditAccountId.hasError('required') && form.controls.creditAccountId.touched) {
+          } @else if (
+            form.controls.creditAccountId.hasError('required') &&
+            form.controls.creditAccountId.touched
+          ) {
             <mat-error>Credit account is required</mat-error>
           }
         </mat-form-field>

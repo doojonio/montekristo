@@ -17,6 +17,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 
 import { Transaction } from '../models/ledger.model';
+import { CategoryService } from '../services/category.service';
 import { LedgerService } from '../services/ledger.service';
 
 /** Accepts a positive decimal string — validated without ever parsing a float. */
@@ -63,6 +64,7 @@ const differentAccountsValidator: ValidatorFn = (
 })
 export class QuickTransaction {
   protected readonly ledger = inject(LedgerService);
+  protected readonly categories = inject(CategoryService);
   private readonly snackBar = inject(MatSnackBar);
 
   protected readonly form = new FormGroup(
@@ -75,6 +77,7 @@ export class QuickTransaction {
         nonNullable: true,
         validators: [Validators.required, Validators.maxLength(200)],
       }),
+      categoryId: new FormControl<string | null>(null),
       debitAccountId: new FormControl('', {
         nonNullable: true,
         validators: [Validators.required],
@@ -93,6 +96,7 @@ export class QuickTransaction {
 
   constructor() {
     void this.ledger.refresh();
+    void this.categories.refresh();
   }
 
   protected async submit(): Promise<void> {
@@ -100,12 +104,13 @@ export class QuickTransaction {
       this.form.markAllAsTouched();
       return;
     }
-    const { date, description, debitAccountId, creditAccountId, amount } =
+    const { date, description, categoryId, debitAccountId, creditAccountId, amount } =
       this.form.getRawValue();
     const transaction: Transaction = {
       id: crypto.randomUUID(),
       date: toIsoDate(date),
       description: description.trim(),
+      category_id: categoryId,
       postings: [
         { account_id: debitAccountId, amount },
         { account_id: creditAccountId, amount: `-${amount}` },

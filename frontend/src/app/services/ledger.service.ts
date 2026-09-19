@@ -78,7 +78,7 @@ export class LedgerService {
   }
 }
 
-function errorMessage(e: unknown): string {
+export function errorMessage(e: unknown): string {
   // The HTTP API renders failures as `{ "error": "..." }` JSON bodies.
   if (e instanceof HttpErrorResponse) {
     const body = e.error as { error?: unknown } | null;
