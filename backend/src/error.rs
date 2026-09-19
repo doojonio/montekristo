@@ -13,4 +13,6 @@ pub enum LedgerError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("invalid data stored in database: {0}")]
     CorruptData(String),
+    #[error("{0} not found")]
+    NotFound(String),
 }

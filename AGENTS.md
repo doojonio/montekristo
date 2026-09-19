@@ -15,5 +15,12 @@
 ## API
 
 - `GET|POST /api/accounts`, `GET|POST /api/transactions`
-- Errors: `{"error": "..."}` JSON body; 422 for validation failures, 500 otherwise.
-- Tauri IPC commands: `get_accounts`, `insert_account`, `get_transactions`, `insert_transaction`.
+- `GET /api/accounts/{id}/ledger` — register rows for one account (signed amount,
+  running balance, transfer account; `transfer_account_id` is null for splits).
+- Accounts form a tree via `parent_id`. `POST /api/accounts` accepts a
+  colon-separated `name` (e.g. "Assets:Current Assets:Checking") and creates
+  missing ancestors with the leaf's type/currency.
+- Errors: `{"error": "..."}` JSON body; 422 for validation failures, 404 for
+  unknown resources, 500 otherwise.
+- Tauri IPC commands: `get_accounts`, `insert_account`, `get_account_ledger`,
+  `get_transactions`, `insert_transaction`.

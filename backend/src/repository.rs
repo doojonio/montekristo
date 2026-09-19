@@ -8,7 +8,9 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::error::LedgerError;
-use crate::models::{Account, Category, Posting, Transaction, default_categories};
+use crate::models::{
+    Account, Category, LedgerEntry, Posting, Transaction, default_categories,
+};
 
 /// SQLite-backed repository for the ledger.
 #[derive(Debug, Clone)]
@@ -31,15 +33,56 @@ impl Ledger {
     }
 
     /// Persists a new account.
+    ///
+    /// The name may be a colon-separated path (e.g.
+    /// "Assets:Current Assets:Checking"): missing ancestor accounts are created
+    /// with the leaf's type and currency, and the leaf is inserted beneath the
+    /// deepest ancestor. A single-segment name is inserted as-is, under
+    /// `parent_id` when one is supplied.
     pub async fn insert_account(&self, account: &Account) -> Result<(), LedgerError> {
-        sqlx::query("INSERT INTO accounts (id, name, account_type, currency) VALUES (?, ?, ?, ?)")
-            .bind(account.id.to_string())
-            .bind(&account.name)
-            .bind(account.account_type)
-            .bind(&account.currency)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        let mut account = account.clone();
+        let segments = path_segments(&account.name);
+        if segments.len() > 1 {
+            account.name = segments.last().unwrap().clone();
+            account.parent_id = Some(self.ensure_path(&segments, &account).await?);
+        }
+        insert_account_row(&self.pool, &account).await
+    }
+
+    /// Resolves the ancestor chain of `segments` under the root, creating
+    /// missing ancestors as clones of `leaf`'s type and currency, and returns
+    /// the id of the deepest ancestor (the leaf's parent).
+    async fn ensure_path(
+        &self,
+        segments: &[String],
+        leaf: &Account,
+    ) -> Result<Uuid, LedgerError> {
+        let mut existing: HashMap<(Option<Uuid>, String), Uuid> = self
+            .accounts()
+            .await?
+            .into_iter()
+            .map(|a| ((a.parent_id, a.name), a.id))
+            .collect();
+
+        let mut parent = None;
+        for segment in &segments[..segments.len() - 1] {
+            let key = (parent, segment.clone());
+            if let Some(id) = existing.get(&key) {
+                parent = Some(*id);
+                continue;
+            }
+            let ancestor = Account {
+                id: Uuid::new_v4(),
+                name: segment.clone(),
+                account_type: leaf.account_type,
+                currency: leaf.currency.clone(),
+                parent_id: parent,
+            };
+            insert_account_row(&self.pool, &ancestor).await?;
+            existing.insert(key, ancestor.id);
+            parent = Some(ancestor.id);
+        }
+        Ok(parent.expect("path has at least one ancestor segment"))
     }
 
     /// Persists a new category.
@@ -120,16 +163,70 @@ impl Ledger {
         Ok(())
     }
 
-    /// Returns all accounts, ordered by name.
+    /// Returns all accounts — roots and nested — ordered by name. The
+    /// hierarchy is expressed through each account's `parent_id`.
     pub async fn accounts(&self) -> Result<Vec<Account>, LedgerError> {
         sqlx::query_as::<_, AccountRow>(
-            "SELECT id, name, account_type, currency FROM accounts ORDER BY name",
+            "SELECT id, name, account_type, currency, parent_id FROM accounts ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await?
         .into_iter()
         .map(Account::try_from)
         .collect()
+    }
+
+    /// Returns the account with `id`, or `None` if it does not exist.
+    pub async fn account(&self, id: Uuid) -> Result<Option<Account>, LedgerError> {
+        sqlx::query_as::<_, AccountRow>(
+            "SELECT id, name, account_type, currency, parent_id FROM accounts WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Account::try_from)
+        .transpose()
+    }
+
+    /// Returns the register for `account_id`: every transaction touching the
+    /// account, oldest first, each carrying the signed amount applied to the
+    /// account and the running balance after it.
+    pub async fn account_ledger(&self, account_id: Uuid) -> Result<Vec<LedgerEntry>, LedgerError> {
+        if self.account(account_id).await?.is_none() {
+            return Err(LedgerError::NotFound(format!("account {account_id}")));
+        }
+
+        let mut balance = Decimal::ZERO;
+        let mut entries = Vec::new();
+        for tx in self.transactions().await? {
+            let amount: Decimal = tx
+                .postings
+                .iter()
+                .filter(|p| p.account_id == account_id)
+                .map(|p| p.amount)
+                .sum();
+            if !tx.postings.iter().any(|p| p.account_id == account_id) {
+                continue;
+            }
+            balance += amount;
+            let transfer_account_id = (tx.postings.len() == 2)
+                .then(|| {
+                    tx.postings
+                        .iter()
+                        .find(|p| p.account_id != account_id)
+                        .map(|p| p.account_id)
+                })
+                .flatten();
+            entries.push(LedgerEntry {
+                transaction_id: tx.id,
+                date: tx.date,
+                description: tx.description,
+                amount,
+                balance,
+                transfer_account_id,
+            });
+        }
+        Ok(entries)
     }
 
     /// Returns all transactions with their postings, ordered by date then id.
@@ -185,6 +282,30 @@ fn parse_uuid(value: &str, field: &str) -> Result<Uuid, LedgerError> {
     Uuid::parse_str(value).map_err(|e| LedgerError::CorruptData(format!("{field} {value:?}: {e}")))
 }
 
+/// Splits an account path like "Assets : Checking" into trimmed, non-empty
+/// segments.
+fn path_segments(path: &str) -> Vec<String> {
+    path.split(':')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+async fn insert_account_row(pool: &SqlitePool, account: &Account) -> Result<(), LedgerError> {
+    sqlx::query(
+        "INSERT INTO accounts (id, name, account_type, currency, parent_id) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(account.id.to_string())
+    .bind(&account.name)
+    .bind(account.account_type)
+    .bind(&account.currency)
+    .bind(account.parent_id.map(|id| id.to_string()))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Ids are stored as hyphenated uuid text; sqlx decodes raw `Uuid` only from
 /// 16-byte blobs, so rows carry `String` ids parsed via [`parse_uuid`].
 #[derive(FromRow)]
@@ -193,6 +314,7 @@ struct AccountRow {
     name: String,
     account_type: crate::models::AccountType,
     currency: String,
+    parent_id: Option<String>,
 }
 
 impl TryFrom<AccountRow> for Account {
@@ -204,6 +326,10 @@ impl TryFrom<AccountRow> for Account {
             name: row.name,
             account_type: row.account_type,
             currency: row.currency,
+            parent_id: row
+                .parent_id
+                .map(|pid| parse_uuid(&pid, "account parent_id"))
+                .transpose()?,
         })
     }
 }
@@ -271,6 +397,7 @@ mod tests {
             name: name.to_string(),
             account_type,
             currency: "USD".to_string(),
+            parent_id: None,
         }
     }
 
@@ -294,6 +421,157 @@ mod tests {
         ledger.insert_account(&visa).await.unwrap();
 
         assert_eq!(ledger.accounts().await.unwrap(), vec![checking, visa]);
+    }
+
+    #[tokio::test]
+    async fn colon_path_creates_nested_accounts() {
+        let ledger = test_ledger().await;
+        let leaf = account("Assets:Current Assets:Checking", AccountType::Asset);
+        ledger.insert_account(&leaf).await.unwrap();
+
+        let accounts = ledger.accounts().await.unwrap();
+        assert_eq!(accounts.len(), 3);
+
+        let by_name: HashMap<&str, &Account> =
+            accounts.iter().map(|a| (a.name.as_str(), a)).collect();
+        let assets = by_name["Assets"];
+        let current = by_name["Current Assets"];
+        let checking = by_name["Checking"];
+
+        assert_eq!(assets.parent_id, None);
+        assert_eq!(current.parent_id, Some(assets.id));
+        assert_eq!(checking.id, leaf.id);
+        assert_eq!(checking.parent_id, Some(current.id));
+        // Ancestors inherit the leaf's classification.
+        assert!(accounts.iter().all(|a| a.account_type == AccountType::Asset));
+    }
+
+    #[tokio::test]
+    async fn colon_path_reuses_existing_ancestors() {
+        let ledger = test_ledger().await;
+        ledger
+            .insert_account(&account("Assets", AccountType::Asset))
+            .await
+            .unwrap();
+        ledger
+            .insert_account(&account("Assets:Checking", AccountType::Asset))
+            .await
+            .unwrap();
+        ledger
+            .insert_account(&account("Assets:Savings", AccountType::Asset))
+            .await
+            .unwrap();
+
+        let accounts = ledger.accounts().await.unwrap();
+        // The shared "Assets" root must not be duplicated.
+        assert_eq!(accounts.len(), 3);
+        assert_eq!(
+            accounts.iter().filter(|a| a.name == "Assets").count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn account_ledger_reports_running_balance_and_transfer() {
+        let ledger = test_ledger().await;
+        let checking = account("Checking", AccountType::Asset);
+        let groceries = account("Groceries", AccountType::Expense);
+        let dining = account("Dining", AccountType::Expense);
+        for account in [&checking, &groceries, &dining] {
+            ledger.insert_account(account).await.unwrap();
+        }
+
+        let spend = |date, description, expense: &Account, cents: Decimal| {
+            transaction(
+                date,
+                description,
+                vec![
+                    Posting {
+                        account_id: expense.id,
+                        amount: cents,
+                    },
+                    Posting {
+                        account_id: checking.id,
+                        amount: -cents,
+                    },
+                ],
+            )
+        };
+        let first = spend(
+            NaiveDate::from_ymd_opt(2026, 9, 17).unwrap(),
+            "groceries",
+            &groceries,
+            dec!(10.10),
+        );
+        let second = spend(
+            NaiveDate::from_ymd_opt(2026, 9, 19).unwrap(),
+            "lunch",
+            &dining,
+            dec!(5.00),
+        );
+        ledger.insert_transaction(&first).await.unwrap();
+        ledger.insert_transaction(&second).await.unwrap();
+
+        let entries = ledger.account_ledger(checking.id).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].transaction_id, first.id);
+        assert_eq!(entries[0].amount, dec!(-10.10));
+        assert_eq!(entries[0].balance, dec!(-10.10));
+        assert_eq!(entries[0].transfer_account_id, Some(groceries.id));
+        assert_eq!(entries[1].amount, dec!(-5.00));
+        assert_eq!(entries[1].balance, dec!(-15.10));
+        assert_eq!(entries[1].transfer_account_id, Some(dining.id));
+
+        // The expense account sees the mirrored, positive leg.
+        let entries = ledger.account_ledger(groceries.id).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].amount, dec!(10.10));
+        assert_eq!(entries[0].transfer_account_id, Some(checking.id));
+    }
+
+    #[tokio::test]
+    async fn account_ledger_marks_splits_without_single_transfer() {
+        let ledger = test_ledger().await;
+        let checking = account("Checking", AccountType::Asset);
+        let groceries = account("Groceries", AccountType::Expense);
+        let dining = account("Dining", AccountType::Expense);
+        for account in [&checking, &groceries, &dining] {
+            ledger.insert_account(account).await.unwrap();
+        }
+
+        let tx = transaction(
+            NaiveDate::from_ymd_opt(2026, 9, 19).unwrap(),
+            "split",
+            vec![
+                Posting {
+                    account_id: groceries.id,
+                    amount: dec!(30.00),
+                },
+                Posting {
+                    account_id: dining.id,
+                    amount: dec!(20.00),
+                },
+                Posting {
+                    account_id: checking.id,
+                    amount: dec!(-50.00),
+                },
+            ],
+        );
+        ledger.insert_transaction(&tx).await.unwrap();
+
+        let entries = ledger.account_ledger(checking.id).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].amount, dec!(-50.00));
+        assert_eq!(entries[0].transfer_account_id, None);
+    }
+
+    #[tokio::test]
+    async fn account_ledger_rejects_unknown_account() {
+        let ledger = test_ledger().await;
+        assert!(matches!(
+            ledger.account_ledger(Uuid::new_v4()).await,
+            Err(LedgerError::NotFound(_))
+        ));
     }
 
     #[tokio::test]

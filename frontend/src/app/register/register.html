@@ -1,0 +1,134 @@
+<div class="flex h-full flex-col">
+  @if (ledger.selectedAccount(); as account) {
+    <header class="border-b border-slate-200 px-4 py-2">
+      <h2 class="truncate text-lg font-semibold text-slate-900">
+        {{ accountPath(account.id) }}
+      </h2>
+      <p class="text-xs capitalize text-slate-500">
+        {{ account.account_type }} · {{ account.currency }}
+      </p>
+    </header>
+
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <div
+        class="register-cols sticky top-0 z-10 border-b border-slate-300 bg-slate-50 text-xs font-semibold uppercase text-slate-500"
+      >
+        <span class="cell">Date</span>
+        <span class="cell">Description</span>
+        <span class="cell">Transfer</span>
+        <span class="cell text-right">Deposit</span>
+        <span class="cell text-right">Withdrawal</span>
+        <span class="cell text-right">Balance</span>
+      </div>
+
+      @if (ledger.ledgerEntries().length === 0) {
+        <p class="px-4 py-6 text-sm text-slate-500">
+          No transactions yet — use the row at the bottom to record one.
+        </p>
+      }
+      @for (entry of ledger.ledgerEntries(); track entry.transaction_id) {
+        <div class="register-cols border-b border-slate-100 text-sm hover:bg-slate-50">
+          <span class="cell tabular-nums text-slate-600">{{ entry.date }}</span>
+          <span class="cell truncate">{{ entry.description }}</span>
+          <span class="cell truncate text-slate-600" [title]="transferOf(entry)">
+            {{ transferOf(entry) }}
+          </span>
+          <span class="cell text-right tabular-nums">{{ depositOf(entry) }}</span>
+          <span class="cell text-right tabular-nums">{{ withdrawalOf(entry) }}</span>
+          <span
+            class="cell text-right font-medium tabular-nums"
+            [class.text-red-600]="entry.balance.startsWith('-')"
+          >
+            {{ formatAmount(entry.balance) }}
+          </span>
+        </div>
+      }
+    </div>
+
+    <form
+      [formGroup]="entryForm"
+      (ngSubmit)="commit()"
+      class="register-cols border-t-2 border-slate-300 bg-white"
+      aria-label="New transaction"
+    >
+      <input
+        #dateInput
+        type="date"
+        formControlName="date"
+        class="cell-input"
+        (keydown.escape)="onEscape()"
+      />
+      <input
+        type="text"
+        formControlName="description"
+        class="cell-input"
+        placeholder="Description"
+        autocomplete="off"
+        [matAutocomplete]="descAuto"
+        #descTrigger="matAutocompleteTrigger"
+        (blur)="applyDescriptionHistory()"
+        (keydown.escape)="onEscape(descTrigger)"
+      />
+      <input
+        type="text"
+        formControlName="transfer"
+        class="cell-input"
+        placeholder="Transfer account"
+        autocomplete="off"
+        [matAutocomplete]="transferAuto"
+        #transferTrigger="matAutocompleteTrigger"
+        (keydown.escape)="onEscape(transferTrigger)"
+      />
+      <input
+        type="text"
+        formControlName="deposit"
+        class="cell-input text-right"
+        placeholder="0.00"
+        inputmode="decimal"
+        autocomplete="off"
+        (input)="onDepositInput()"
+        (keydown.escape)="onEscape()"
+      />
+      <input
+        type="text"
+        formControlName="withdrawal"
+        class="cell-input text-right"
+        placeholder="0.00"
+        inputmode="decimal"
+        autocomplete="off"
+        (input)="onWithdrawalInput()"
+        (keydown.escape)="onEscape()"
+      />
+      <button
+        type="submit"
+        class="cell text-right text-slate-400 hover:text-sky-600"
+        title="Record transaction (Enter)"
+      >
+        ⏎
+      </button>
+    </form>
+
+    <mat-autocomplete
+      #descAuto="matAutocomplete"
+      autoActiveFirstOption
+      (optionSelected)="applyDescriptionHistory($event.option.value)"
+    >
+      @for (d of descriptionOptions(); track d) {
+        <mat-option [value]="d">{{ d }}</mat-option>
+      }
+    </mat-autocomplete>
+    <mat-autocomplete #transferAuto="matAutocomplete" autoActiveFirstOption>
+      @for (p of transferOptions(); track p) {
+        <mat-option [value]="p">{{ p }}</mat-option>
+      }
+    </mat-autocomplete>
+
+    @if (entryError()) {
+      <p class="border-t border-red-200 bg-red-50 px-4 py-1 text-xs text-red-700" role="alert">
+        {{ entryError() }}
+      </p>
+    }
+  } @else {
+    <p class="p-6 text-sm text-slate-500">Select an account to view its register.</p>
+  }
+</div>

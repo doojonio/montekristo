@@ -16,6 +16,10 @@ pub enum AccountType {
 }
 
 /// A named ledger account holding balances in a single currency.
+///
+/// Accounts form a tree: `parent_id` points at the containing account, or is
+/// `None` for roots. The colon-separated path of an account (e.g.
+/// "Assets:Current Assets:Checking") is the chain of ancestor names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub id: Uuid,
@@ -23,6 +27,7 @@ pub struct Account {
     pub account_type: AccountType,
     /// ISO 4217 currency code, e.g. "USD".
     pub currency: String,
+    pub parent_id: Option<Uuid>,
 }
 
 /// Whether a category classifies outflows or inflows.
@@ -83,4 +88,22 @@ pub struct Transaction {
     /// Optional classification; `None` means uncategorized.
     pub category_id: Option<Uuid>,
     pub postings: Vec<Posting>,
+}
+
+/// One row of an account's register: a transaction touching the account, the
+/// signed amount applied to it, and the running balance after it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LedgerEntry {
+    pub transaction_id: Uuid,
+    pub date: NaiveDate,
+    pub description: String,
+    /// Net amount applied to this account by the transaction (debit positive).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+    /// Running balance of the account after this entry.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub balance: Decimal,
+    /// The counterparty account for a simple two-posting transfer; `None` for
+    /// splits or same-account postings.
+    pub transfer_account_id: Option<Uuid>,
 }

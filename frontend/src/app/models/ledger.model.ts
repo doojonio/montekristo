@@ -6,6 +6,8 @@ export interface Account {
   account_type: AccountType;
   /** ISO 4217 currency code, e.g. "USD". */
   currency: string;
+  /** Parent account id; `null` for roots. */
+  parent_id: string | null;
 }
 
 export type CategoryType = 'expense' | 'income';
@@ -32,4 +34,18 @@ export interface Transaction {
   /** Optional classification; `null` means uncategorized. */
   category_id: string | null;
   postings: Posting[];
+}
+
+/** One row of an account's register, with its running balance. */
+export interface LedgerEntry {
+  transaction_id: string;
+  /** Calendar date as "YYYY-MM-DD". */
+  date: string;
+  description: string;
+  /** Net amount applied to the account (debit positive), as a decimal string. */
+  amount: string;
+  /** Running balance after this entry, as a decimal string. */
+  balance: string;
+  /** Counterparty account for two-posting transfers; `null` for splits. */
+  transfer_account_id: string | null;
 }

@@ -1,15 +1,16 @@
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 use backend::error::LedgerError;
-use backend::models::{Account, Category, Transaction};
+use backend::models::{Account, Category, LedgerEntry, Transaction};
 use backend::repository::Ledger;
 
 #[tokio::main]
@@ -20,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/api/accounts", get(get_accounts).post(insert_account))
+        .route("/api/accounts/{id}/ledger", get(get_account_ledger))
         .route(
             "/api/categories",
             get(get_categories).post(insert_category),
@@ -49,6 +51,13 @@ async fn insert_account(
 ) -> Result<(StatusCode, Json<Account>), ApiError> {
     ledger.insert_account(&account).await?;
     Ok((StatusCode::CREATED, Json(account)))
+}
+
+async fn get_account_ledger(
+    State(ledger): State<Ledger>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<LedgerEntry>>, ApiError> {
+    Ok(Json(ledger.account_ledger(id).await?))
 }
 
 async fn get_categories(State(ledger): State<Ledger>) -> Result<Json<Vec<Category>>, ApiError> {
@@ -95,6 +104,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self.0 {
             LedgerError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            LedgerError::NotFound(_) => StatusCode::NOT_FOUND,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (

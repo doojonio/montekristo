@@ -42,6 +42,7 @@ mod tests {
             name: name.to_string(),
             account_type,
             currency: "USD".to_string(),
+            parent_id: None,
         }
     }
 
