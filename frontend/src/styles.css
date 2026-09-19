@@ -1,3 +1,16 @@
-/* You can add global styles to this file, and also import other style files */
+/* Material theme sits in a lower cascade layer than Tailwind utilities so
+   utility classes can override component styles when needed. */
+@layer material, theme, base, components, utilities;
 
 @import "tailwindcss";
+@import "@angular/material/prebuilt-themes/azure-blue.css" layer(material);
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: Roboto, "Helvetica Neue", Arial, sans-serif;
+}

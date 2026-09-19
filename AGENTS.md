@@ -7,6 +7,10 @@
   is behind the `server` feature so `src-tauri` does not pull in web deps).
   - Env: `DATABASE_URL` (default `sqlite://ledger.db`), `BIND_ADDR` (default `127.0.0.1:3000`).
 - `cargo check -p app` — typecheck the Tauri shell (`src-tauri`, package `app`).
+- `cd frontend && npm start` — Angular dev server on :4200; `proxy.conf.json`
+  forwards `/api/*` to `http://localhost:3000`, so run the backend alongside it.
+- `cd frontend && npm test` / `npm run build` — Vitest unit tests / production
+  build to `dist/frontend/browser` (the path Tauri's `frontendDist` expects).
 
 ## API
 
