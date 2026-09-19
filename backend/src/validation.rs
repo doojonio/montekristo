@@ -113,10 +113,7 @@ mod tests {
             },
         ]);
 
-        assert_eq!(
-            tx.validate(),
-            Err(ValidationError::Unbalanced(dec!(0.01)))
-        );
+        assert_eq!(tx.validate(), Err(ValidationError::Unbalanced(dec!(0.01))));
     }
 
     #[test]

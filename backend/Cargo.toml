@@ -7,7 +7,18 @@ edition = "2024"
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 rust_decimal = { version = "1", features = ["serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "chrono",
+    "macros",
+    "migrate",
+    "rust_decimal",
+    "runtime-tokio",
+    "sqlite",
+    "tls-rustls",
+    "uuid",
+] }
 thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
